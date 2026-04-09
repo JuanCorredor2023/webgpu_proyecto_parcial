@@ -3,7 +3,15 @@ import shaderCode from "./shader.wgsl?raw";
 import { Camera } from "./camera";
 import { mat4 } from "./math";
 import { gui, hexToRgb, initGUI, updateLightDisplay } from "./gui";
-import { computeBounds, computeVertexNormals, buildInterleavedVertexData, generateSphericalUvMesh } from "./mesh";
+import type { DisplayMode } from "./gui";
+import {
+  buildInterleavedVertexData,
+  buildPointIndices,
+  buildWireframeEdgeIndices,
+  computeBounds,
+  computeVertexNormals,
+  generateSphericalUvMesh,
+} from "./mesh";
 import type { MeshData } from "./mesh";
 
 
@@ -267,7 +275,11 @@ type SceneObject = {
   name: string;
   type: SceneObjectType;
   meshData: MeshData;
+  texturedMeshData: MeshData;
   gpuMesh: GPUMesh;
+  solidGpuMesh: GPUMesh;
+  wireframeMesh: GPUMesh;
+  pointMesh: GPUMesh;
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   useTexture: boolean;
@@ -385,8 +397,16 @@ function parseOBJ(text: string): MeshData {
   return mesh;
 }
 
-function uploadMesh(mesh: MeshData): GPUMesh {
+function uploadMesh(mesh: MeshData, indexSource: Uint16Array | Uint32Array = mesh.indices): GPUMesh {
   const vertexData = buildInterleavedVertexData(mesh);
+  const alignedIndexByteLength = Math.ceil(indexSource.byteLength / 4) * 4;
+  const indexUploadData = alignedIndexByteLength === indexSource.byteLength
+    ? indexSource
+    : (() => {
+        const padded = new Uint8Array(alignedIndexByteLength);
+        padded.set(new Uint8Array(indexSource.buffer, indexSource.byteOffset, indexSource.byteLength));
+        return padded;
+      })();
 
   const vertexBuffer = device.createBuffer({
     size: vertexData.byteLength,
@@ -395,16 +415,16 @@ function uploadMesh(mesh: MeshData): GPUMesh {
   device.queue.writeBuffer(vertexBuffer, 0, vertexData);
 
   const indexBuffer = device.createBuffer({
-    size: mesh.indices.byteLength,
+    size: alignedIndexByteLength,
     usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(indexBuffer, 0, mesh.indices);
+  device.queue.writeBuffer(indexBuffer, 0, indexUploadData);
 
   return {
     vertexBuffer,
     indexBuffer,
-    indexCount: mesh.indices.length,
-    indexFormat: mesh.indices instanceof Uint32Array ? "uint32" : "uint16",
+    indexCount: indexSource.length,
+    indexFormat: indexSource instanceof Uint32Array ? "uint32" : "uint16",
   };
 }
 
@@ -682,6 +702,38 @@ const lightingPipeline = device.createRenderPipeline({
   depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
 });
 
+const wireframePipeline = device.createRenderPipeline({
+  label: "Wireframe Pipeline",
+  layout: normalPipelineLayout,
+  vertex: {
+    module: shader,
+    entryPoint: "wireframe_vs",
+    buffers: vertexBuffers,
+  },
+  fragment: {
+    module: shader,
+    entryPoint: "wireframe_fs",
+    targets: [{ format }],
+  },
+  primitive: { topology: "line-list" },
+});
+
+const vertexPointPipeline = device.createRenderPipeline({
+  label: "Vertex Point Pipeline",
+  layout: normalPipelineLayout,
+  vertex: {
+    module: shader,
+    entryPoint: "wireframe_vs",
+    buffers: vertexBuffers,
+  },
+  fragment: {
+    module: shader,
+    entryPoint: "vertex_point_fs",
+    targets: [{ format }],
+  },
+  primitive: { topology: "point-list" },
+});
+
 resize();
 window.addEventListener("resize", resize);
 
@@ -695,6 +747,9 @@ function createObjectUniformBuffer() {
 function createSceneObjectFromMesh(type: SceneObjectType, meshData: MeshData): SceneObject {
   const texturedMeshData = generateSphericalUvMesh(meshData);
   const gpuMesh = uploadMesh(texturedMeshData);
+  const solidGpuMesh = uploadMesh(meshData);
+  const wireframeMesh = uploadMesh(meshData, buildWireframeEdgeIndices(meshData));
+  const pointMesh = uploadMesh(meshData, buildPointIndices(meshData));
 
   const uniformBuffer = createObjectUniformBuffer();
   const bindGroup = device.createBindGroup({
@@ -712,8 +767,12 @@ function createSceneObjectFromMesh(type: SceneObjectType, meshData: MeshData): S
     id,
     name: `${baseName} ${id + 1}`,
     type,
-    meshData: texturedMeshData,
+    meshData,
+    texturedMeshData,
     gpuMesh,
+    solidGpuMesh,
+    wireframeMesh,
+    pointMesh,
     uniformBuffer,
     bindGroup,
     useTexture: false,
@@ -754,6 +813,9 @@ initGUI({
     const object = addObjectToScene(scene, shape);
     selectObject(scene, object.id);
     ensureSelectedObjectFits(scene, camera);
+  },
+  onChangeDisplayMode: (mode: DisplayMode) => {
+    gui.displayMode = mode;
   },
   onSelectObject: id => {
     selectObject(scene, id);
@@ -932,15 +994,31 @@ function updateObjectUniforms(
   device.queue.writeBuffer(object.uniformBuffer, 0, uArrayBuf);
 }
 
-function drawSceneObjects(pass: GPURenderPassEncoder, includeMaterial = false) {
+type MeshRenderKind = "shaded" | "solid" | "wireframe" | "points";
+
+function getObjectGpuMesh(object: SceneObject, meshKind: MeshRenderKind) {
+  switch (meshKind) {
+    case "solid":
+      return object.solidGpuMesh;
+    case "wireframe":
+      return object.wireframeMesh;
+    case "points":
+      return object.pointMesh;
+    default:
+      return object.gpuMesh;
+  }
+}
+
+function drawSceneObjects(pass: GPURenderPassEncoder, meshKind: MeshRenderKind, includeMaterial = false) {
   for (const object of scene.objects) {
+    const mesh = getObjectGpuMesh(object, meshKind);
     pass.setBindGroup(0, object.bindGroup);
     if (includeMaterial) {
       pass.setBindGroup(2, object.textureBindGroup);
     }
-    pass.setVertexBuffer(0, object.gpuMesh.vertexBuffer);
-    pass.setIndexBuffer(object.gpuMesh.indexBuffer, object.gpuMesh.indexFormat);
-    pass.drawIndexed(object.gpuMesh.indexCount);
+    pass.setVertexBuffer(0, mesh.vertexBuffer);
+    pass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
+    pass.drawIndexed(mesh.indexCount);
   }
 }
 
@@ -983,42 +1061,61 @@ function frame(now: number) {
     );
   }
 
-  if (!depthTexture || !gNormalTextureView || !normalTextureBindGroup) {
+  const isWireframeMode = gui.displayMode === "wireframe";
+
+  if (!depthTexture || (!isWireframeMode && (!gNormalTextureView || !normalTextureBindGroup))) {
     requestAnimationFrame(frame);
     return;
   }
 
   const encoder = device.createCommandEncoder();
-  const normalPass = encoder.beginRenderPass({
-    colorAttachments: [{
-      view: gNormalTextureView,
-      clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      loadOp: "clear", storeOp: "store",
-    }],
-    depthStencilAttachment: {
-      view: depthTexture.createView(),
-      depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
-    },
-  });
-  normalPass.setPipeline(normalPipeline);
-  drawSceneObjects(normalPass);
-  normalPass.end();
+  const depthView = depthTexture.createView();
 
-  const lightingPass = encoder.beginRenderPass({
-    colorAttachments: [{
-      view: context.getCurrentTexture().createView(),
-      clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
-      loadOp: "clear", storeOp: "store",
-    }],
-    depthStencilAttachment: {
-      view: depthTexture.createView(),
-      depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
-    },
-  });
-  lightingPass.setPipeline(lightingPipeline);
-  lightingPass.setBindGroup(1, normalTextureBindGroup);
-  drawSceneObjects(lightingPass, true);
-  lightingPass.end();
+  if (isWireframeMode) {
+    const wireframePass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: context.getCurrentTexture().createView(),
+        clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }],
+    });
+    wireframePass.setPipeline(wireframePipeline);
+    drawSceneObjects(wireframePass, "wireframe");
+    wireframePass.setPipeline(vertexPointPipeline);
+    drawSceneObjects(wireframePass, "points");
+    wireframePass.end();
+  } else {
+    const normalPass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: gNormalTextureView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }],
+      depthStencilAttachment: {
+        view: depthView,
+        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+      },
+    });
+    normalPass.setPipeline(normalPipeline);
+    drawSceneObjects(normalPass, "shaded");
+    normalPass.end();
+
+    const lightingPass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: context.getCurrentTexture().createView(),
+        clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }],
+      depthStencilAttachment: {
+        view: depthView,
+        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+      },
+    });
+    lightingPass.setPipeline(lightingPipeline);
+    lightingPass.setBindGroup(1, normalTextureBindGroup);
+    drawSceneObjects(lightingPass, "shaded", true);
+    lightingPass.end();
+  }
 
   device.queue.submit([encoder.finish()]);
   requestAnimationFrame(frame);

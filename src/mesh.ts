@@ -273,6 +273,55 @@ export function computeVertexNormals(mesh: MeshData): Float32Array {
   return normals;
 }
 
+export function buildWireframeEdgeIndices(mesh: MeshData): Uint16Array | Uint32Array {
+  assertValidMesh(mesh);
+
+  const edges = new Set<string>();
+  const lineIndices: number[] = [];
+
+  function registerEdge(a: number, b: number) {
+    if (a === b) return;
+
+    const minIndex = Math.min(a, b);
+    const maxIndex = Math.max(a, b);
+    const key = `${minIndex}:${maxIndex}`;
+
+    if (edges.has(key)) return;
+
+    edges.add(key);
+    lineIndices.push(minIndex, maxIndex);
+  }
+
+  for (let i = 0; i < mesh.indices.length; i += 3) {
+    const a = mesh.indices[i];
+    const b = mesh.indices[i + 1];
+    const c = mesh.indices[i + 2];
+
+    registerEdge(a, b);
+    registerEdge(b, c);
+    registerEdge(c, a);
+  }
+
+  return getVertexCount(mesh) > 0xffff
+    ? new Uint32Array(lineIndices)
+    : new Uint16Array(lineIndices);
+}
+
+export function buildPointIndices(mesh: MeshData): Uint16Array | Uint32Array {
+  assertValidMesh(mesh);
+
+  const vertexCount = getVertexCount(mesh);
+  const pointIndices = new Array<number>(vertexCount);
+
+  for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
+    pointIndices[vertexIndex] = vertexIndex;
+  }
+
+  return vertexCount > 0xffff
+    ? new Uint32Array(pointIndices)
+    : new Uint16Array(pointIndices);
+}
+
 export function buildInterleavedVertexData(mesh: MeshData): Float32Array {
   assertValidMesh(mesh);
 

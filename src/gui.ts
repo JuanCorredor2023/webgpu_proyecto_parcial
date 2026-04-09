@@ -1,6 +1,9 @@
 // Shared GUI state (read by the render loop in main.ts)
+export type DisplayMode = "shaded" | "wireframe";
+
 export const gui = {
   modelId: 0,
+  displayMode: "shaded" as DisplayMode,
   ambient: 0.12,
   diffuse: 0.75,
   specular: 0.6,
@@ -35,6 +38,7 @@ type GUITextureState = {
 type GUIBindings = {
   onAddObject: (shape: Shape) => void;
   onAddObj: (file: File) => Promise<void> | void;
+  onChangeDisplayMode: (mode: DisplayMode) => void;
   onUploadTexture: (file: File) => Promise<void> | void;
   onToggleTexture: (enabled: boolean) => void;
   onSelectObject: (id: number) => void;
@@ -69,7 +73,6 @@ const MODEL_DESCS: Record<number, string> = {
 
 const FUTURE_MODE_LABELS = [
   "Normals",
-  "Wireframe",
   "Depth",
   "Texture",
   "UV Coords",
@@ -139,6 +142,12 @@ function renderFutureModeButtons() {
   return FUTURE_MODE_LABELS.map(label => `<button class="placeholder-btn" type="button" disabled>${label}</button>`).join("");
 }
 
+function getDisplayModeDescription() {
+  return gui.displayMode === "wireframe"
+    ? "Wireframe active. Hidden surfaces are removed with a depth prepass."
+    : "Wireframe inactive. The selected shading model remains ready for the main render path.";
+}
+
 function setText(id: string, value: string) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
@@ -159,6 +168,15 @@ export function updateLightDisplay(lx: number, lz: number) {
 
 function updateModeDescription() {
   setText("model-desc", MODEL_DESCS[gui.modelId]);
+}
+
+function updateDisplayModeUi() {
+  const button = document.getElementById("wireframe-mode") as HTMLButtonElement | null;
+  if (button) {
+    button.classList.toggle("active", gui.displayMode === "wireframe");
+  }
+
+  setText("midterm-mode-desc", getDisplayModeDescription());
 }
 
 function setSliderState(id: string, value: number, disabled: boolean) {
@@ -305,11 +323,10 @@ export function initGUI(bindings: GUIBindings) {
   <div class="gui-section">
     <div class="gui-label">Midterm Modes</div>
     <div class="btn-row">
+      <button class="midterm-mode-btn${gui.displayMode === "wireframe" ? " active" : ""}" id="wireframe-mode" type="button">Wireframe</button>
       ${renderFutureModeButtons()}
     </div>
-    <div class="mode-desc">
-      Front-end placeholders for the next pipeline stages. You can wire these controls later.
-    </div>
+    <div class="mode-desc" id="midterm-mode-desc">${getDisplayModeDescription()}</div>
   </div>
 
   <div class="gui-section">
@@ -380,6 +397,7 @@ export function initGUI(bindings: GUIBindings) {
   document.body.appendChild(overlay);
 
   updateModeDescription();
+  updateDisplayModeUi();
   refreshScenePanel(bindings);
 
   document.querySelectorAll<HTMLButtonElement>(".model-btn").forEach(btn => {
@@ -397,6 +415,12 @@ export function initGUI(bindings: GUIBindings) {
       bindings.onAddObject(shape);
       refreshScenePanel(bindings);
     });
+  });
+
+  (document.getElementById("wireframe-mode") as HTMLButtonElement | null)?.addEventListener("click", () => {
+    gui.displayMode = gui.displayMode === "wireframe" ? "shaded" : "wireframe";
+    bindings.onChangeDisplayMode(gui.displayMode);
+    updateDisplayModeUi();
   });
 
   (document.getElementById("obj-upload") as HTMLInputElement | null)?.addEventListener("change", async event => {

@@ -50,6 +50,10 @@ struct VSOut {
   @location(3) gouraudColor  : vec3<f32>,
 };
 
+struct WireframeVSOut {
+  @builtin(position) clipPos : vec4<f32>,
+};
+
 fn flatLighting(fragWorldPos: vec3<f32>) -> vec3<f32> {
   let dx = dpdx(fragWorldPos);
   let dy = dpdy(fragWorldPos);
@@ -199,4 +203,22 @@ fn lighting_fs(input: VSOut) -> @location(0) vec4<f32> {
   }
 
   return vec4<f32>(lighting * albedo, 1.0);
+}
+
+@vertex
+fn wireframe_vs(input: VSIn) -> WireframeVSOut {
+  var out: WireframeVSOut;
+  out.clipPos = u.mvp * vec4<f32>(input.position, 1.0);
+  return out;
+}
+
+@fragment
+fn wireframe_fs() -> @location(0) vec4<f32> {
+  return vec4<f32>(u.objectColor, 1.0);
+}
+
+@fragment
+fn vertex_point_fs() -> @location(0) vec4<f32> {
+  let pointColor = min(u.objectColor + vec3<f32>(0.45), vec3<f32>(1.0));
+  return vec4<f32>(pointColor, 1.0);
 }
