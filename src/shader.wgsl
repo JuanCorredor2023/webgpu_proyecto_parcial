@@ -176,6 +176,18 @@ fn normal_fs(input: VSOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn normals_debug_fs(input: VSOut) -> @location(0) vec4<f32> {
+  let remappedNormal = normalize(input.worldNormal) * 0.5 + vec3<f32>(0.5);
+  return vec4<f32>(remappedNormal, 1.0);
+}
+
+@fragment
+fn uv_debug_fs(input: VSOut) -> @location(0) vec4<f32> {
+  let wrappedUv = fract(input.uv);
+  return vec4<f32>(vec3<f32>(wrappedUv, 0.0), 1.0);
+}
+
+@fragment
 fn lighting_fs(input: VSOut) -> @location(0) vec4<f32> {
   if DEBUG_NORMAL_BUFFER {
     let debugNormal = loadNormalFromBuffer(input.clipPos);

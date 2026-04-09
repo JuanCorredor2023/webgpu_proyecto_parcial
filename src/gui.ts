@@ -1,5 +1,5 @@
 // Shared GUI state (read by the render loop in main.ts)
-export type DisplayMode = "shaded" | "wireframe";
+export type DisplayMode = "shaded" | "wireframe" | "normals" | "uv";
 
 export const gui = {
   modelId: 0,
@@ -39,6 +39,8 @@ type GUIBindings = {
   onAddObject: (shape: Shape) => void;
   onAddObj: (file: File) => Promise<void> | void;
   onChangeDisplayMode: (mode: DisplayMode) => void;
+  onClearSelection: () => void;
+  onRemoveSelected: () => void;
   onUploadTexture: (file: File) => Promise<void> | void;
   onToggleTexture: (enabled: boolean) => void;
   onSelectObject: (id: number) => void;
@@ -71,11 +73,11 @@ const MODEL_DESCS: Record<number, string> = {
   3: "Blinn-Phong shading active. Specular uses the half-vector H = normalize(L + V).",
 };
 
-const FUTURE_MODE_LABELS = [
-  "Normals",
-  "Depth",
-  "Texture",
-  "UV Coords",
+const DISPLAY_MODE_BUTTONS: Array<{ mode: DisplayMode; label: string }> = [
+  { mode: "shaded", label: "Shaded" },
+  { mode: "wireframe", label: "Wireframe" },
+  { mode: "normals", label: "Normals" },
+  { mode: "uv", label: "UV Coords" },
 ];
 
 const TRANSFORM_CONTROLS: Array<{ id: string; key: TransformKey }> = [
@@ -138,14 +140,27 @@ function fileInput(id: string, label: string, accept = "", disabled = false) {
   </label>`;
 }
 
-function renderFutureModeButtons() {
-  return FUTURE_MODE_LABELS.map(label => `<button class="placeholder-btn" type="button" disabled>${label}</button>`).join("");
+function renderDisplayModeButtons() {
+  return DISPLAY_MODE_BUTTONS.map(({ mode, label }) => `
+    <button
+      class="midterm-mode-btn${gui.displayMode === mode ? " active" : ""}"
+      data-mode="${mode}"
+      type="button"
+    >${label}</button>
+  `).join("");
 }
 
 function getDisplayModeDescription() {
-  return gui.displayMode === "wireframe"
-    ? "Wireframe active. Hidden surfaces are removed with a depth prepass."
-    : "Wireframe inactive. The selected shading model remains ready for the main render path.";
+  switch (gui.displayMode) {
+    case "wireframe":
+      return "Wireframe active. Edges and vertex points are shown without shaded surfaces.";
+    case "normals":
+      return "Normals debug active. RGB encodes remapped world-space normals.";
+    case "uv":
+      return "UV debug active. Red maps U and green maps V coordinates.";
+    default:
+      return "Shaded render active. The selected shading model drives the lit pass.";
+  }
 }
 
 function setText(id: string, value: string) {
@@ -171,12 +186,18 @@ function updateModeDescription() {
 }
 
 function updateDisplayModeUi() {
-  const button = document.getElementById("wireframe-mode") as HTMLButtonElement | null;
-  if (button) {
-    button.classList.toggle("active", gui.displayMode === "wireframe");
-  }
+  document.querySelectorAll<HTMLButtonElement>(".midterm-mode-btn").forEach(button => {
+    button.classList.toggle("active", button.dataset.mode === gui.displayMode);
+  });
 
   setText("midterm-mode-desc", getDisplayModeDescription());
+}
+
+function updateSceneActionButtons(bindings: GUIBindings) {
+  const hasSelection = Boolean(bindings.getSelectedObject());
+
+  (document.getElementById("deselect-object") as HTMLButtonElement | null)!.disabled = !hasSelection;
+  (document.getElementById("remove-object") as HTMLButtonElement | null)!.disabled = !hasSelection;
 }
 
 function setSliderState(id: string, value: number, disabled: boolean) {
@@ -254,6 +275,8 @@ function renderInspector(bindings: GUIBindings) {
   const transform = selected?.transform ?? EMPTY_TRANSFORM;
   const disabled = !selected;
 
+  updateSceneActionButtons(bindings);
+
   setText("inspector-title", selected ? `${selected.name} selected` : "No selection");
   setText(
     "transform-note",
@@ -323,8 +346,7 @@ export function initGUI(bindings: GUIBindings) {
   <div class="gui-section">
     <div class="gui-label">Midterm Modes</div>
     <div class="btn-row">
-      <button class="midterm-mode-btn${gui.displayMode === "wireframe" ? " active" : ""}" id="wireframe-mode" type="button">Wireframe</button>
-      ${renderFutureModeButtons()}
+      ${renderDisplayModeButtons()}
     </div>
     <div class="mode-desc" id="midterm-mode-desc">${getDisplayModeDescription()}</div>
   </div>
@@ -355,8 +377,8 @@ export function initGUI(bindings: GUIBindings) {
   <div id="object-list"></div>
 
   <div class="btn-row gui-actions">
-    <button class="placeholder-btn" type="button" disabled>Deselect</button>
-    <button class="placeholder-btn" type="button" disabled>Remove</button>
+    <button id="deselect-object" type="button" disabled>Deselect</button>
+    <button id="remove-object" type="button" disabled>Remove</button>
   </div>
 
   <div id="inspector">
@@ -417,10 +439,22 @@ export function initGUI(bindings: GUIBindings) {
     });
   });
 
-  (document.getElementById("wireframe-mode") as HTMLButtonElement | null)?.addEventListener("click", () => {
-    gui.displayMode = gui.displayMode === "wireframe" ? "shaded" : "wireframe";
-    bindings.onChangeDisplayMode(gui.displayMode);
-    updateDisplayModeUi();
+  document.querySelectorAll<HTMLButtonElement>(".midterm-mode-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      gui.displayMode = (btn.dataset.mode as DisplayMode | undefined) ?? "shaded";
+      bindings.onChangeDisplayMode(gui.displayMode);
+      updateDisplayModeUi();
+    });
+  });
+
+  (document.getElementById("deselect-object") as HTMLButtonElement | null)?.addEventListener("click", () => {
+    bindings.onClearSelection();
+    refreshScenePanel(bindings);
+  });
+
+  (document.getElementById("remove-object") as HTMLButtonElement | null)?.addEventListener("click", () => {
+    bindings.onRemoveSelected();
+    refreshScenePanel(bindings);
   });
 
   (document.getElementById("obj-upload") as HTMLInputElement | null)?.addEventListener("change", async event => {

@@ -507,6 +507,13 @@ function addObjectToScene(scene: Scene, type: "cube" | "sphere") {
   return addSceneObject(scene, obj);
 }
 
+function clearSelection(scene: Scene) {
+  scene.selectedObjectId = -1;
+  for (const obj of scene.objects) {
+    obj.selected = false;
+  }
+}
+
 function selectObject(scene: Scene, id: number) {
   scene.selectedObjectId = id;
   for (const obj of scene.objects) {
@@ -529,6 +536,33 @@ function updateObjectTextureBindGroup(object: SceneObject) {
     : fallbackWhiteTextureView;
 
   object.textureBindGroup = createMaterialTextureBindGroup(textureView);
+}
+
+function destroyGpuMesh(mesh: GPUMesh) {
+  mesh.vertexBuffer.destroy();
+  mesh.indexBuffer.destroy();
+}
+
+function destroySceneObjectResources(object: SceneObject) {
+  destroyGpuMesh(object.gpuMesh);
+  destroyGpuMesh(object.solidGpuMesh);
+  destroyGpuMesh(object.wireframeMesh);
+  destroyGpuMesh(object.pointMesh);
+  object.uniformBuffer.destroy();
+  object.textureGpu?.destroy();
+  object.textureGpu = null;
+  object.textureView = null;
+  object.hasTexture = false;
+  object.useTexture = false;
+}
+
+function removeSelectedObject(scene: Scene) {
+  const selectedIndex = scene.objects.findIndex(object => object.id === scene.selectedObjectId);
+  if (selectedIndex < 0) return;
+
+  const [removedObject] = scene.objects.splice(selectedIndex, 1);
+  destroySceneObjectResources(removedObject);
+  clearSelection(scene);
 }
 
 async function uploadTextureToObject(object: SceneObject, file: File) {
@@ -702,6 +736,40 @@ const lightingPipeline = device.createRenderPipeline({
   depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
 });
 
+const normalsDebugPipeline = device.createRenderPipeline({
+  label: "Normals Debug Pipeline",
+  layout: normalPipelineLayout,
+  vertex: {
+    module: shader,
+    entryPoint: "scene_vs",
+    buffers: vertexBuffers,
+  },
+  fragment: {
+    module: shader,
+    entryPoint: "normals_debug_fs",
+    targets: [{ format }],
+  },
+  primitive: { topology: "triangle-list", cullMode: "back" },
+  depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+});
+
+const uvDebugPipeline = device.createRenderPipeline({
+  label: "UV Debug Pipeline",
+  layout: normalPipelineLayout,
+  vertex: {
+    module: shader,
+    entryPoint: "scene_vs",
+    buffers: vertexBuffers,
+  },
+  fragment: {
+    module: shader,
+    entryPoint: "uv_debug_fs",
+    targets: [{ format }],
+  },
+  primitive: { topology: "triangle-list", cullMode: "back" },
+  depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+});
+
 const wireframePipeline = device.createRenderPipeline({
   label: "Wireframe Pipeline",
   layout: normalPipelineLayout,
@@ -816,6 +884,12 @@ initGUI({
   },
   onChangeDisplayMode: (mode: DisplayMode) => {
     gui.displayMode = mode;
+  },
+  onClearSelection: () => {
+    clearSelection(scene);
+  },
+  onRemoveSelected: () => {
+    removeSelectedObject(scene);
   },
   onSelectObject: id => {
     selectObject(scene, id);
@@ -1061,60 +1135,100 @@ function frame(now: number) {
     );
   }
 
-  const isWireframeMode = gui.displayMode === "wireframe";
+  const isShadedMode = gui.displayMode === "shaded";
 
-  if (!depthTexture || (!isWireframeMode && (!gNormalTextureView || !normalTextureBindGroup))) {
+  if (!depthTexture || (isShadedMode && (!gNormalTextureView || !normalTextureBindGroup))) {
     requestAnimationFrame(frame);
     return;
   }
 
   const encoder = device.createCommandEncoder();
   const depthView = depthTexture.createView();
+  const currentTextureView = context.getCurrentTexture().createView();
 
-  if (isWireframeMode) {
-    const wireframePass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: context.getCurrentTexture().createView(),
-        clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
-        loadOp: "clear", storeOp: "store",
-      }],
-    });
-    wireframePass.setPipeline(wireframePipeline);
-    drawSceneObjects(wireframePass, "wireframe");
-    wireframePass.setPipeline(vertexPointPipeline);
-    drawSceneObjects(wireframePass, "points");
-    wireframePass.end();
-  } else {
-    const normalPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: gNormalTextureView,
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        loadOp: "clear", storeOp: "store",
-      }],
-      depthStencilAttachment: {
-        view: depthView,
-        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
-      },
-    });
-    normalPass.setPipeline(normalPipeline);
-    drawSceneObjects(normalPass, "shaded");
-    normalPass.end();
+  switch (gui.displayMode) {
+    case "wireframe": {
+      const wireframePass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTextureView,
+          clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+          loadOp: "clear", storeOp: "store",
+        }],
+      });
+      wireframePass.setPipeline(wireframePipeline);
+      drawSceneObjects(wireframePass, "wireframe");
+      wireframePass.setPipeline(vertexPointPipeline);
+      drawSceneObjects(wireframePass, "points");
+      wireframePass.end();
+      break;
+    }
+    case "normals": {
+      const debugPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTextureView,
+          clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+          loadOp: "clear", storeOp: "store",
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+        },
+      });
+      debugPass.setPipeline(normalsDebugPipeline);
+      drawSceneObjects(debugPass, "shaded");
+      debugPass.end();
+      break;
+    }
+    case "uv": {
+      const debugPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTextureView,
+          clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+          loadOp: "clear", storeOp: "store",
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+        },
+      });
+      debugPass.setPipeline(uvDebugPipeline);
+      drawSceneObjects(debugPass, "shaded");
+      debugPass.end();
+      break;
+    }
+    default: {
+      const normalPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: gNormalTextureView,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: "clear", storeOp: "store",
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+        },
+      });
+      normalPass.setPipeline(normalPipeline);
+      drawSceneObjects(normalPass, "shaded");
+      normalPass.end();
 
-    const lightingPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: context.getCurrentTexture().createView(),
-        clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
-        loadOp: "clear", storeOp: "store",
-      }],
-      depthStencilAttachment: {
-        view: depthView,
-        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
-      },
-    });
-    lightingPass.setPipeline(lightingPipeline);
-    lightingPass.setBindGroup(1, normalTextureBindGroup);
-    drawSceneObjects(lightingPass, "shaded", true);
-    lightingPass.end();
+      const lightingPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTextureView,
+          clearValue: { r: 0.08, g: 0.08, b: 0.12, a: 1 },
+          loadOp: "clear", storeOp: "store",
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+        },
+      });
+      lightingPass.setPipeline(lightingPipeline);
+      lightingPass.setBindGroup(1, normalTextureBindGroup);
+      drawSceneObjects(lightingPass, "shaded", true);
+      lightingPass.end();
+      break;
+    }
   }
 
   device.queue.submit([encoder.finish()]);

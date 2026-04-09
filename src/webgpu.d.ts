@@ -44,7 +44,9 @@ declare global {
   };
 
   type GPUTextureView = unknown;
-  type GPUBuffer = unknown;
+  type GPUBuffer = {
+    destroy(): void;
+  };
   type GPUSampler = unknown;
   type GPUBindGroup = unknown;
   type GPUBindGroupLayout = unknown;
