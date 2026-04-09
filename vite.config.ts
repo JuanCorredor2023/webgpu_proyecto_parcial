@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "/<your-repo-name>/",
+  base: "webgpu_proyecto_parcial",
   build: {
     rollupOptions: {
       input: {
